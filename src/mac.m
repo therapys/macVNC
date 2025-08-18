@@ -733,8 +733,17 @@ int main(int argc,char *argv[])
     }
 
   if(!viewOnly && !AXIsProcessTrusted()) {
-      fprintf(stderr, "You have configured the server to post input events, but it does not have the necessary system permission. Please check if the program has been given permission to control your computer in 'System Preferences'->'Security & Privacy'->'Privacy'->'Accessibility'.\n");
-      exit(1);
+      const void *keys[] = { kAXTrustedCheckOptionPrompt };
+      const void *vals[] = { kCFBooleanTrue };
+      CFDictionaryRef opts = CFDictionaryCreate(kCFAllocatorDefault, keys, vals, 1,
+                                                &kCFTypeDictionaryKeyCallBacks,
+                                                &kCFTypeDictionaryValueCallBacks);
+      Boolean trusted = AXIsProcessTrustedWithOptions(opts);
+      if (opts) CFRelease(opts);
+      if (!trusted) {
+          fprintf(stderr, "You have configured the server to post input events, but it does not have the necessary system permission. Please add 'macVNC' (the app bundle) to 'System Settings'->'Privacy & Security'->'Accessibility'. If you rebuilt the app, remove and re-add it.\n");
+          exit(1);
+      }
   }
 
   dimmingInit();
