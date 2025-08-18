@@ -361,6 +361,21 @@ static void listWindows(void)
     CFRelease(infoArray);
 }
 
+/* Ensure Screen Recording permission is granted; trigger prompt if needed */
+static rfbBool ensureScreenRecordingAccess(void)
+{
+#ifdef __APPLE__
+    /* Available since macOS 10.15 */
+    /* If already granted, return immediately */
+    if (CGPreflightScreenCaptureAccess())
+        return TRUE;
+    /* Trigger system prompt */
+    if (CGRequestScreenCaptureAccess())
+        return TRUE;
+#endif
+    return FALSE;
+}
+
 /* Try to find an iOS Simulator window (owner "Simulator") and return its window id and frame */
 static rfbBool findSimulatorWindow(uint32_t *outWindowID, CGRect *outFrame)
 {
@@ -515,11 +530,19 @@ PtrAddEvent(int buttonMask, int x, int y, rfbClientPtr cl)
     undim();
 
     /* Prevent minimize/close/zoom and titlebar double-click by blocking clicks in the title bar */
-    const int kTitleBarBlockHeight = 46; /* conservative default; avoids traffic lights + title bar */
+    const int kTitleBarBlockHeight = 56; /* conservative default; avoids traffic lights + title bar */
     rfbBool isButtonClick = (buttonMask & ((1 << 0) | (1 << 1) | (1 << 2))) != 0;
-    if (isButtonClick && !hasCropRect) {
-        if (y >= 0 && y < kTitleBarBlockHeight) {
-            return; /* ignore mouse button events in title bar region */
+    static rfbBool suppressDragFromTitlebar = FALSE;
+    /* Clear suppression when no buttons are pressed */
+    if (!isButtonClick) suppressDragFromTitlebar = FALSE;
+    if (!hasCropRect) {
+        if (!suppressDragFromTitlebar && isButtonClick && y >= 0 && y < kTitleBarBlockHeight) {
+            /* Start suppressing an entire drag sequence that began in the title bar */
+            suppressDragFromTitlebar = TRUE;
+            return;
+        }
+        if (suppressDragFromTitlebar) {
+            return; /* ignore all pointer events until release */
         }
     }
 
@@ -834,7 +857,14 @@ int main(int argc,char *argv[])
     } else if(strcmp(argv[i],"-simulator-crop")==0) {
         /* Convenience: crop off the window toolbar (assumes bezels disabled and 1:1 scale) */
         hasCropRect = TRUE;
-        cropRect = CGRectMake(0, 28, 0, 0); /* width/height will be set after we know window size */
+        cropRect = CGRectMake(0, 56, 0, 0); /* width/height will be set after we know window size */
+    } else if(strcmp(argv[i],"-simulator-crop-offset")==0) {
+        /* Fine-tune the top crop offset in pixels; applies with -simulator-crop */
+        if (i + 1 < argc) {
+            int top = atoi(argv[i+1]);
+            hasCropRect = TRUE;
+            cropRect = CGRectMake(0, top, 0, 0);
+        }
     } else if(strcmp(argv[i],"-listwindows")==0) {
         listWindows();
         exit(EXIT_SUCCESS);
@@ -844,10 +874,19 @@ int main(int argc,char *argv[])
         fprintf(stderr, "-crop <x> <y> <w> <h>  Crop to sub-rectangle inside the window (window-local coords)\n");
         fprintf(stderr, "-simulator             Auto-select the iOS Simulator window\n");
         fprintf(stderr, "-simulator-crop        Also crop off the simulator window toolbar (assumes bezels disabled)\n");
+        fprintf(stderr, "-simulator-crop-offset <px>  Fine-tune top crop in pixels when using -simulator-crop\n");
         fprintf(stderr, "-listwindows           Print on-screen windows with titles and their window IDs\n");
         rfbUsage();
         exit(EXIT_SUCCESS);
     }
+
+  /* Proactively request Screen Recording permission before starting */
+  if (!ensureScreenRecordingAccess()) {
+      fprintf(stderr, "This app requires Screen Recording permission. Please enable it for 'macVNC' in System Settings -> Privacy & Security -> Screen Recording, then relaunch.\n");
+      /* Give the system time to show the prompt before exiting when launched from Terminal */
+      sleep(1);
+      exit(1);
+  }
 
   if(!viewOnly && !AXIsProcessTrusted()) {
       const void *keys[] = { kAXTrustedCheckOptionPrompt };
