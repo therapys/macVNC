@@ -469,6 +469,15 @@ PtrAddEvent(int buttonMask, int x, int y, rfbClientPtr cl)
 
     undim();
 
+    /* Prevent minimize/close/zoom and titlebar double-click by blocking clicks in the title bar */
+    const int kTitleBarBlockHeight = 28; /* conservative default; avoids traffic lights + title bar */
+    rfbBool isButtonClick = (buttonMask & ((1 << 0) | (1 << 1) | (1 << 2))) != 0;
+    if (isButtonClick) {
+        if (y >= 0 && y < kTitleBarBlockHeight) {
+            return; /* ignore mouse button events in title bar region */
+        }
+    }
+
     position.x = x + displayBounds.origin.x;
     position.y = y + displayBounds.origin.y;
 
