@@ -23,6 +23,7 @@ find_library(SCREEN_CAPTURE_KIT ScreenCaptureKit REQUIRED)
 find_library(CORE_MEDIA CoreMedia)
 find_library(CORE_VIDEO CoreVideo)
 find_library(FOUNDATION Foundation)
+find_library(APPLICATION_SERVICES ApplicationServices REQUIRED)
 
 #
 # Sources
@@ -49,6 +50,10 @@ target_link_libraries(${PROJECT_NAME} LibVNCServer::vncserver ${CMAKE_THREAD_LIB
   ${CORE_MEDIA}
   ${CORE_VIDEO}
   ${FOUNDATION})
+
+# Standalone utility to list current on-screen windows with titles
+add_executable(listwindows src/listwindows.m)
+target_link_libraries(listwindows ${APPLICATION_SERVICES})
 
 #
 # Install, i.e. finalise bundle

@@ -12,8 +12,9 @@ GPL dump by AT&T Cambridge.
 
 * Fully multi-threaded.
 * Double-buffering for framebuffer updates.
-* Mouse and keyboard input.
-* Multi-monitor support.
+* Window-only capture (stream a single selected window).
+* Mouse input and keyboard typing (printable keys) only.
+* Built-in window lister (`-listwindows`) to discover `windowid`s.
 
 # Building
 
@@ -32,13 +33,21 @@ macVNC uses CMake, thus after installing build dependencies it's:
 # Running
 
 As you might have Apple's Remote Desktop Server already running (which occupies port 5900),
-you can run macVNC via
+you can run macVNC on another port.
 
-    ./macVNC.app/Contents/MacOS/macVNC -rfbport 5901
+1) List on-screen windows to find the target `windowid`:
 
-In its default setup, macVNC does mouse and keyboard input. For this, it needs certain system permissions.
-It tells you on first run if these are missing; you can set up permissions via 'System Preferences'->'Security & Privacy'->'Privacy'->'Accessibility'.
-Note that if launched from Terminal, the entry shown will be 'Terminal', not 'macVNC'.
+    ./macVNC.app/Contents/MacOS/macVNC -listwindows
+
+2) Start streaming a specific window (mandatory):
+
+    ./macVNC.app/Contents/MacOS/macVNC -windowid <id> -rfbport 5901
+
+Permissions:
+- Screen Recording: required to capture the window.
+- Accessibility: required to post mouse/keyboard input.
+
+If launched from Terminal, the permission dialogs may show 'Terminal' instead of 'macVNC'.
 
 Note that setting a password is mandatory in case you want to access the server using MacOS's built-in Screen Sharing app.
 You can do so via the `-passwd` commandline argument.
