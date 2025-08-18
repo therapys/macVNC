@@ -2,7 +2,7 @@
 
 @interface ScreenCapturer ()
 
-@property (nonatomic, assign) CGDirectDisplayID displayID;
+@property (nonatomic, assign) uint32_t windowID;
 @property (nonatomic, strong) SCStream *stream;
 
 // handlers
@@ -14,11 +14,11 @@
 
 @implementation ScreenCapturer
 
-- (instancetype)initWithDisplay:(CGDirectDisplayID)displayID
+- (instancetype)initWithWindowID:(uint32_t)windowID
                    frameHandler:(void (^)(CMSampleBufferRef))frameHandler
                    errorHandler:(void (^)(NSError *))errorHandler {
     if (self = [super init]) {
-        _displayID = displayID;
+        _windowID = windowID;
         _frameHandler = [frameHandler copy];
         _errorHandler = [errorHandler copy];
     }
@@ -31,28 +31,35 @@
             self.errorHandler(error);
             return;
         }
-
-        SCDisplay *display = content.displays[[content.displays indexOfObjectPassingTest:^BOOL(SCDisplay *_Nonnull d, NSUInteger idx, BOOL *_Nonnull stop) {
-                    return d.displayID == self.displayID;
-                }]];
-
-        if (!display) {
-            NSError *noDisplayError = [NSError errorWithDomain:@"ScreenCapturerErrorDomain"
-                                                          code:1
-                                                      userInfo:@{NSLocalizedDescriptionKey : @"Display not available for capture"}];
-            self.errorHandler(noDisplayError);
-            return;
-        }
-
         SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
-        // can later be adjusted for server-side scaling
-        config.width = display.width;
-        config.height = display.height;
         // set max frame rate to 60 FPS
         config.minimumFrameInterval = CMTimeMake(1, 60);
         config.pixelFormat = kCVPixelFormatType_32BGRA;
 
-        SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:(display) excludingWindows:(@[])];
+        SCContentFilter *filter = nil;
+        {
+            SCWindow *selectedWindow = nil;
+            for (SCWindow *w in content.windows) {
+                if (w.windowID == self.windowID) {
+                    selectedWindow = w;
+                    break;
+                }
+            }
+            if (!selectedWindow) {
+                NSError *noWindowError = [NSError errorWithDomain:@"ScreenCapturerErrorDomain"
+                                                            code:2
+                                                        userInfo:@{NSLocalizedDescriptionKey : @"Window not available for capture"}];
+                self.errorHandler(noWindowError);
+                return;
+            }
+            config.width = selectedWindow.frame.size.width;
+            config.height = selectedWindow.frame.size.height;
+            if ([SCContentFilter instancesRespondToSelector:@selector(initWithDesktopIndependentWindow:)]) {
+                filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:selectedWindow];
+            } else {
+                filter = [[SCContentFilter alloc] initWithWindow:selectedWindow excludingWindows:@[]];
+            }
+        }
         self.stream = [[SCStream alloc] initWithFilter:filter configuration:config delegate:self];
 
         NSError *addOutputError = nil;

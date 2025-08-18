@@ -6,7 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface ScreenCapturer : NSObject <SCStreamDelegate, SCStreamOutput>
 
-- (instancetype)initWithDisplay:(CGDirectDisplayID)displayID
+- (instancetype)initWithWindowID:(uint32_t)windowID
                    frameHandler:(nonnull void (^)(CMSampleBufferRef sampleBuffer))frameHandler
                    errorHandler:(nonnull void (^)(NSError *error))errorHandler;
 

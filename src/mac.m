@@ -29,6 +29,8 @@
 
 #include <Carbon/Carbon.h>
 #include <ScreenCaptureKit/ScreenCaptureKit.h>
+#include <CoreGraphics/CGWindow.h>
+#include <ApplicationServices/ApplicationServices.h>
 #include <rfb/rfb.h>
 #include <rfb/keysym.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
@@ -51,10 +53,12 @@ void *frameBufferTwo;
 /* Pointer to the current backbuffer. */
 void *backBuffer;
 
-/* The multi-sceen display number chosen by the user */
-int displayNumber = -1;
-/* The corresponding multi-sceen display ID */
-CGDirectDisplayID displayID;
+/* Window capture settings */
+static uint32_t targetWindowID = 0;
+static CGRect captureFrame;
+static int captureWidth = 0;
+static int captureHeight = 0;
+static pid_t targetPid = 0;
 
 /* The server's private event source */
 CGEventSourceRef eventSource;
@@ -319,6 +323,68 @@ dimmingShutdown(void)
 
 void serverShutdown(rfbClientPtr cl);
 
+/* List all current windows that have titles, printing: windowid\towner - title */
+static void listWindows(void)
+{
+    CFArrayRef infoArray = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!infoArray) {
+        fprintf(stderr, "Unable to query window list.\n");
+        return;
+    }
+
+    CFIndex count = CFArrayGetCount(infoArray);
+    for (CFIndex i = 0; i < count; ++i) {
+        CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(infoArray, i);
+        if (!info) continue;
+
+        CFStringRef title = (CFStringRef)CFDictionaryGetValue(info, kCGWindowName);
+        if (!title || CFStringGetLength(title) == 0) continue; /* only windows with titles */
+
+        CFNumberRef numRef = (CFNumberRef)CFDictionaryGetValue(info, kCGWindowNumber);
+        int windowId = 0;
+        if (!numRef || !CFNumberGetValue(numRef, kCFNumberIntType, &windowId)) continue;
+
+        CFStringRef owner = (CFStringRef)CFDictionaryGetValue(info, kCGWindowOwnerName);
+
+        char titleBuf[1024];
+        char ownerBuf[256];
+        titleBuf[0] = '\0';
+        ownerBuf[0] = '\0';
+        if (title) CFStringGetCString(title, titleBuf, sizeof(titleBuf), kCFStringEncodingUTF8);
+        if (owner) CFStringGetCString(owner, ownerBuf, sizeof(ownerBuf), kCFStringEncodingUTF8);
+
+        printf("%d\t%s - %s\n", windowId, ownerBuf, titleBuf);
+    }
+
+    CFRelease(infoArray);
+}
+
+/* Get window frame by CGWindowID */
+static rfbBool getWindowFrame(uint32_t windowID, CGRect *outFrame)
+{
+    rfbBool ok = FALSE;
+    CFArrayRef infoArray = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, windowID);
+    if (!infoArray)
+        return FALSE;
+    if (CFArrayGetCount(infoArray) == 0) {
+        CFRelease(infoArray);
+        return FALSE;
+    }
+    CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(infoArray, 0);
+    if (info) {
+        CFDictionaryRef boundsDict = (CFDictionaryRef)CFDictionaryGetValue(info, kCGWindowBounds);
+        if (boundsDict && outFrame) {
+            CGRect frame;
+            if (CGRectMakeWithDictionaryRepresentation(boundsDict, &frame)) {
+                *outFrame = frame;
+                ok = TRUE;
+            }
+        }
+    }
+    CFRelease(infoArray);
+    return ok;
+}
+
 /*
   Synthesize a keyboard event. This is not called on the main thread due to rfbRunEventLoop(..,..,TRUE), but it works.
   We first look up the incoming keysym in the keymap for special keys (and save state of the shifting modifiers).
@@ -336,12 +402,20 @@ KbdAddEvent(rfbBool down, rfbKeySym keySym, struct _rfbClientRec* cl)
 
     undim();
 
+    /* Only allow typing (printable ASCII + space/return/tab/backspace) */
+    rfbBool isPrintable = (keySym >= 0x20 && keySym <= 0x7E);
+    rfbBool isTypingControl = (keySym == XK_space || keySym == XK_Return || keySym == XK_BackSpace || keySym == XK_Tab);
+    if (!isPrintable && !isTypingControl)
+        return;
+
     /* look for special key */
-    for (i = 0; i < (sizeof(specialKeyMap) / sizeof(int)); i += 2) {
-        if (specialKeyMap[i] == keySym) {
-            keyCode = specialKeyMap[i+1];
-            specialKeyFound = 1;
-            break;
+    if (!isPrintable) {
+        for (i = 0; i < (sizeof(specialKeyMap) / sizeof(int)); i += 2) {
+            if (specialKeyMap[i] == keySym) {
+                keyCode = specialKeyMap[i+1];
+                specialKeyFound = 1;
+                break;
+            }
         }
     }
 
@@ -381,7 +455,7 @@ KbdAddEvent(rfbBool down, rfbKeySym keySym, struct _rfbClientRec* cl)
     /* Set the Shift modifier explicitly as MacOS sometimes gets internal state wrong and Shift stuck. */
     CGEventSetFlags(keyboardEvent, CGEventGetFlags(keyboardEvent) & (isShiftDown ? kCGEventFlagMaskShift : ~kCGEventFlagMaskShift));
 
-    CGEventPost(kCGSessionEventTap, keyboardEvent);
+    CGEventPost(kCGHIDEventTap, keyboardEvent);
     CFRelease(keyboardEvent);
 }
 
@@ -390,7 +464,7 @@ void
 PtrAddEvent(int buttonMask, int x, int y, rfbClientPtr cl)
 {
     CGPoint position;
-    CGRect displayBounds = CGDisplayBounds(displayID);
+    CGRect displayBounds = captureFrame;
     CGEventRef mouseEvent = NULL;
 
     undim();
@@ -510,46 +584,43 @@ rfbBool
 ScreenInit(int argc, char**argv)
 {
   int bitsPerSample = 8;
-  CGDisplayCount displayCount;
-  CGDirectDisplayID displays[32];
-
-  /* grab the active displays */
-  CGGetActiveDisplayList(32, displays, &displayCount);
-  for (int i=0; i<displayCount; i++) {
-      CGRect bounds = CGDisplayBounds(displays[i]);
-      printf("Found %s display %d at (%d,%d) and a resolution of %dx%d\n", (CGDisplayIsMain(displays[i]) ? "primary" : "secondary"), i, (int)bounds.origin.x, (int)bounds.origin.y, (int)bounds.size.width, (int)bounds.size.height);
+  if (targetWindowID == 0) {
+      fprintf(stderr, "-windowid <id> is required and must be a valid CGWindowID.\n");
+      return FALSE;
   }
-  if(displayNumber < 0) {
-      printf("Using primary display as a default\n");
-      displayID = CGMainDisplayID();
-  } else if (displayNumber < displayCount) {
-      printf("Using specified display %d\n", displayNumber);
-      displayID = displays[displayNumber];
+ 
+  /* Initialize capture frame and dimensions for window or display */
+  if (targetWindowID != 0) {
+      if (!getWindowFrame(targetWindowID, &captureFrame)) {
+          fprintf(stderr, "Could not get window %u frame.\n", (unsigned)targetWindowID);
+          return FALSE;
+      }
   } else {
-      fprintf(stderr, "Specified display %d does not exist\n", displayNumber);
+      /* unreachable: we require -windowid */
       return FALSE;
   }
-
-
-  rfbScreen = rfbGetScreen(&argc,argv,
-			   CGDisplayPixelsWide(displayID),
-			   CGDisplayPixelsHigh(displayID),
-			   bitsPerSample,
-			   3,
-			   4);
-  if(!rfbScreen) {
-      rfbErr("Could not init rfbScreen.\n");
-      return FALSE;
-  }
-
-  rfbScreen->serverFormat.redShift = bitsPerSample*2;
-  rfbScreen->serverFormat.greenShift = bitsPerSample*1;
-  rfbScreen->serverFormat.blueShift = 0;
-
-  gethostname(rfbScreen->thisHost, 255);
-
-  frameBufferOne = malloc(CGDisplayPixelsWide(displayID) * CGDisplayPixelsHigh(displayID) * 4);
-  frameBufferTwo = malloc(CGDisplayPixelsWide(displayID) * CGDisplayPixelsHigh(displayID) * 4);
+ 
+ 
+   rfbScreen = rfbGetScreen(&argc,argv,
+               (int)captureFrame.size.width,
+               (int)captureFrame.size.height,
+                bitsPerSample,
+                3,
+                4);
+ 
+   if(!rfbScreen) {
+       rfbErr("Could not init rfbScreen.\n");
+       return FALSE;
+   }
+ 
+   rfbScreen->serverFormat.redShift = bitsPerSample*2;
+   rfbScreen->serverFormat.greenShift = bitsPerSample*1;
+   rfbScreen->serverFormat.blueShift = 0;
+ 
+   gethostname(rfbScreen->thisHost, 255);
+  
+  frameBufferOne = malloc((int)captureFrame.size.width * (int)captureFrame.size.height * 4);
+  frameBufferTwo = malloc((int)captureFrame.size.width * (int)captureFrame.size.height * 4);
 
   /* back buffer */
   backBuffer = frameBufferOne;
@@ -561,9 +632,9 @@ ScreenInit(int argc, char**argv)
 
   rfbScreen->ptrAddEvent = PtrAddEvent;
   rfbScreen->kbdAddEvent = KbdAddEvent;
-
-  ScreenCapturer *capturer = [[ScreenCapturer alloc] initWithDisplay: displayID
-                                                        frameHandler:^(CMSampleBufferRef sampleBuffer) {
+ 
+  ScreenCapturer *capturer = [[ScreenCapturer alloc] initWithWindowID: (uint32_t)targetWindowID
+                                      frameHandler:^(CMSampleBufferRef sampleBuffer) {
           rfbClientIteratorPtr iterator;
           rfbClientPtr cl;
 
@@ -578,7 +649,7 @@ ScreenInit(int argc, char**argv)
 
           memcpy(backBuffer,
                  CVPixelBufferGetBaseAddress(pixelBuffer),
-                 CGDisplayPixelsWide(displayID) *  CGDisplayPixelsHigh(displayID) * 4);
+                 (int)captureFrame.size.width * (int)captureFrame.size.height * 4);
 
           CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 
@@ -603,7 +674,7 @@ ScreenInit(int argc, char**argv)
             ScreenCaptureKit does not have something like CGDisplayStreamUpdateGetRects(),
             so mark the whole framebuffer.
            */
-          rfbMarkRectAsModified(rfbScreen, 0, 0, CGDisplayPixelsWide(displayID), CGDisplayPixelsHigh(displayID));
+          rfbMarkRectAsModified(rfbScreen, 0, 0, (int)captureFrame.size.width, (int)captureFrame.size.height);
 
           /* Swapping framebuffers finished, reenable client reads. */
           iterator=rfbGetClientIterator(rfbScreen);
@@ -648,11 +719,15 @@ int main(int argc,char *argv[])
   for(i=argc-1;i>0;i--)
     if(strcmp(argv[i],"-viewonly")==0) {
       viewOnly=TRUE;
-    } else if(strcmp(argv[i],"-display")==0) {
-	displayNumber = atoi(argv[i+1]);
+    } else if(strcmp(argv[i],"-windowid")==0) {
+        targetWindowID = (uint32_t)strtoul(argv[i+1], NULL, 10);
+    } else if(strcmp(argv[i],"-listwindows")==0) {
+        listWindows();
+        exit(EXIT_SUCCESS);
     } else if(strcmp(argv[i],"-h") == 0 || strcmp(argv[i],"--help") == 0)  {
         fprintf(stderr, "-viewonly              Do not allow any input\n");
-        fprintf(stderr, "-display <index>       Only export specified display\n");
+        fprintf(stderr, "-windowid <id>         Only export specified window (CGWindowID)\n");
+        fprintf(stderr, "-listwindows           Print on-screen windows with titles and their window IDs\n");
         rfbUsage();
         exit(EXIT_SUCCESS);
     }
