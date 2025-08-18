@@ -44,6 +44,10 @@ set(MACOSX_BUNDLE_ICON_FILE icon.icns)
 set_source_files_properties(src/icon.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
 add_executable(${PROJECT_NAME} MACOSX_BUNDLE ${SOURCE_FILES})
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  MACOSX_BUNDLE_GUI_IDENTIFIER org.libvnc.macvnc
+  MACOSX_BUNDLE_BUNDLE_NAME macVNC
+)
 
 target_link_libraries(${PROJECT_NAME} LibVNCServer::vncserver ${CMAKE_THREAD_LIBS_INIT} ${CARBON_LIBRARY} ${IOKIT_LIBRARY}
   ${SCREEN_CAPTURE_KIT}

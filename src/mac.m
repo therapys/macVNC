@@ -59,6 +59,8 @@ static CGRect captureFrame;
 static int captureWidth = 0;
 static int captureHeight = 0;
 static pid_t targetPid = 0;
+static CGRect cropRect;              /* sub-rect within window; window-local coords */
+static rfbBool hasCropRect = FALSE;  /* if TRUE, stream only cropRect */
 
 /* The server's private event source */
 CGEventSourceRef eventSource;
@@ -359,6 +361,49 @@ static void listWindows(void)
     CFRelease(infoArray);
 }
 
+/* Try to find an iOS Simulator window (owner "Simulator") and return its window id and frame */
+static rfbBool findSimulatorWindow(uint32_t *outWindowID, CGRect *outFrame)
+{
+    rfbBool found = FALSE;
+    CFArrayRef infoArray = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!infoArray)
+        return FALSE;
+    CFIndex count = CFArrayGetCount(infoArray);
+    int bestArea = 0;
+    uint32_t bestWin = 0;
+    CGRect bestFrame = CGRectZero;
+    for (CFIndex i = 0; i < count; ++i) {
+        CFDictionaryRef info = (CFDictionaryRef)CFArrayGetValueAtIndex(infoArray, i);
+        if (!info) continue;
+        CFStringRef owner = (CFStringRef)CFDictionaryGetValue(info, kCGWindowOwnerName);
+        if (!owner) continue;
+        char ownerBuf[256] = {0};
+        CFStringGetCString(owner, ownerBuf, sizeof(ownerBuf), kCFStringEncodingUTF8);
+        if (strcmp(ownerBuf, "Simulator") != 0) continue;
+
+        CFDictionaryRef boundsDict = (CFDictionaryRef)CFDictionaryGetValue(info, kCGWindowBounds);
+        CFNumberRef numRef = (CFNumberRef)CFDictionaryGetValue(info, kCGWindowNumber);
+        if (!boundsDict || !numRef) continue;
+        CGRect frame;
+        if (!CGRectMakeWithDictionaryRepresentation(boundsDict, &frame)) continue;
+        int area = (int)(frame.size.width * frame.size.height);
+        if (area > bestArea) {
+            int windowId = 0;
+            if (!CFNumberGetValue(numRef, kCFNumberIntType, &windowId)) continue;
+            bestArea = area;
+            bestWin = (uint32_t)windowId;
+            bestFrame = frame;
+            found = TRUE;
+        }
+    }
+    if (found) {
+        if (outWindowID) *outWindowID = bestWin;
+        if (outFrame) *outFrame = bestFrame;
+    }
+    if (infoArray) CFRelease(infoArray);
+    return found;
+}
+
 /* Get window frame by CGWindowID */
 static rfbBool getWindowFrame(uint32_t windowID, CGRect *outFrame)
 {
@@ -470,16 +515,20 @@ PtrAddEvent(int buttonMask, int x, int y, rfbClientPtr cl)
     undim();
 
     /* Prevent minimize/close/zoom and titlebar double-click by blocking clicks in the title bar */
-    const int kTitleBarBlockHeight = 28; /* conservative default; avoids traffic lights + title bar */
+    const int kTitleBarBlockHeight = 46; /* conservative default; avoids traffic lights + title bar */
     rfbBool isButtonClick = (buttonMask & ((1 << 0) | (1 << 1) | (1 << 2))) != 0;
-    if (isButtonClick) {
+    if (isButtonClick && !hasCropRect) {
         if (y >= 0 && y < kTitleBarBlockHeight) {
             return; /* ignore mouse button events in title bar region */
         }
     }
 
-    position.x = x + displayBounds.origin.x;
-    position.y = y + displayBounds.origin.y;
+    /* Apply crop offset if streaming a sub-rectangle */
+    CGFloat cropOffsetX = hasCropRect ? cropRect.origin.x : 0.0;
+    CGFloat cropOffsetY = hasCropRect ? cropRect.origin.y : 0.0;
+
+    position.x = x + displayBounds.origin.x + cropOffsetX;
+    position.y = y + displayBounds.origin.y + cropOffsetY;
 
     /* map buttons 4 5 6 7 to scroll events as per https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst#745pointerevent */
     if(buttonMask & (1 << 3))
@@ -609,10 +658,32 @@ ScreenInit(int argc, char**argv)
       return FALSE;
   }
  
+  captureWidth = (int)captureFrame.size.width;
+  captureHeight = (int)captureFrame.size.height;
+
+  int effectiveWidth = captureWidth;
+  int effectiveHeight = captureHeight;
+  if (hasCropRect) {
+      /* validate crop within window bounds */
+      if (cropRect.size.width == 0 && cropRect.size.height == 0) {
+          /* set dimensions if requested via -simulator-crop */
+          cropRect.size.width = captureWidth;
+          cropRect.size.height = captureHeight - cropRect.origin.y;
+      }
+      if (cropRect.origin.x < 0 || cropRect.origin.y < 0 ||
+          cropRect.origin.x + cropRect.size.width > captureWidth ||
+          cropRect.origin.y + cropRect.size.height > captureHeight ||
+          cropRect.size.width <= 0 || cropRect.size.height <= 0) {
+          fprintf(stderr, "Invalid -crop rectangle; must fit inside the window.\n");
+          return FALSE;
+      }
+      effectiveWidth = (int)cropRect.size.width;
+      effectiveHeight = (int)cropRect.size.height;
+  }
  
    rfbScreen = rfbGetScreen(&argc,argv,
-               (int)captureFrame.size.width,
-               (int)captureFrame.size.height,
+               effectiveWidth,
+               effectiveHeight,
                 bitsPerSample,
                 3,
                 4);
@@ -628,8 +699,8 @@ ScreenInit(int argc, char**argv)
  
    gethostname(rfbScreen->thisHost, 255);
   
-  frameBufferOne = malloc((int)captureFrame.size.width * (int)captureFrame.size.height * 4);
-  frameBufferTwo = malloc((int)captureFrame.size.width * (int)captureFrame.size.height * 4);
+  frameBufferOne = malloc(effectiveWidth * effectiveHeight * 4);
+  frameBufferTwo = malloc(effectiveWidth * effectiveHeight * 4);
 
   /* back buffer */
   backBuffer = frameBufferOne;
@@ -656,9 +727,19 @@ ScreenInit(int argc, char**argv)
 
           CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 
-          memcpy(backBuffer,
-                 CVPixelBufferGetBaseAddress(pixelBuffer),
-                 (int)captureFrame.size.width * (int)captureFrame.size.height * 4);
+          void *base = CVPixelBufferGetBaseAddress(pixelBuffer);
+          size_t srcStride = (size_t)CVPixelBufferGetBytesPerRow(pixelBuffer);
+          int outW = effectiveWidth;
+          int outH = effectiveHeight;
+          if (!hasCropRect) {
+              memcpy(backBuffer, base, (size_t)outW * (size_t)outH * 4);
+          } else {
+              uint8_t *dst = (uint8_t *)backBuffer;
+              uint8_t *srcStart = (uint8_t *)base + ((size_t)cropRect.origin.y * srcStride) + ((size_t)cropRect.origin.x * 4);
+              for (int row = 0; row < outH; ++row) {
+                  memcpy(dst + (size_t)row * (size_t)outW * 4, srcStart + (size_t)row * srcStride, (size_t)outW * 4);
+              }
+          }
 
           CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 
@@ -683,7 +764,7 @@ ScreenInit(int argc, char**argv)
             ScreenCaptureKit does not have something like CGDisplayStreamUpdateGetRects(),
             so mark the whole framebuffer.
            */
-          rfbMarkRectAsModified(rfbScreen, 0, 0, (int)captureFrame.size.width, (int)captureFrame.size.height);
+          rfbMarkRectAsModified(rfbScreen, 0, 0, effectiveWidth, effectiveHeight);
 
           /* Swapping framebuffers finished, reenable client reads. */
           iterator=rfbGetClientIterator(rfbScreen);
@@ -730,12 +811,39 @@ int main(int argc,char *argv[])
       viewOnly=TRUE;
     } else if(strcmp(argv[i],"-windowid")==0) {
         targetWindowID = (uint32_t)strtoul(argv[i+1], NULL, 10);
+    } else if(strcmp(argv[i],"-crop")==0) {
+        /* expects four integers: x y w h (window-local coordinates) */
+        if (i + 4 < argc) {
+            int x = atoi(argv[i+1]);
+            int y = atoi(argv[i+2]);
+            int w = atoi(argv[i+3]);
+            int h = atoi(argv[i+4]);
+            cropRect = CGRectMake(x, y, w, h);
+            hasCropRect = TRUE;
+        }
+    } else if(strcmp(argv[i],"-simulator")==0) {
+        uint32_t simWin = 0;
+        CGRect simFrame = CGRectZero;
+        if (findSimulatorWindow(&simWin, &simFrame)) {
+            targetWindowID = simWin;
+            captureFrame = simFrame;
+        } else {
+            fprintf(stderr, "Could not find an iOS Simulator window on screen.\n");
+            exit(1);
+        }
+    } else if(strcmp(argv[i],"-simulator-crop")==0) {
+        /* Convenience: crop off the window toolbar (assumes bezels disabled and 1:1 scale) */
+        hasCropRect = TRUE;
+        cropRect = CGRectMake(0, 28, 0, 0); /* width/height will be set after we know window size */
     } else if(strcmp(argv[i],"-listwindows")==0) {
         listWindows();
         exit(EXIT_SUCCESS);
     } else if(strcmp(argv[i],"-h") == 0 || strcmp(argv[i],"--help") == 0)  {
         fprintf(stderr, "-viewonly              Do not allow any input\n");
         fprintf(stderr, "-windowid <id>         Only export specified window (CGWindowID)\n");
+        fprintf(stderr, "-crop <x> <y> <w> <h>  Crop to sub-rectangle inside the window (window-local coords)\n");
+        fprintf(stderr, "-simulator             Auto-select the iOS Simulator window\n");
+        fprintf(stderr, "-simulator-crop        Also crop off the simulator window toolbar (assumes bezels disabled)\n");
         fprintf(stderr, "-listwindows           Print on-screen windows with titles and their window IDs\n");
         rfbUsage();
         exit(EXIT_SUCCESS);
