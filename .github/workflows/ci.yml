@@ -1,6 +1,10 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
 
 jobs:
   build:
@@ -12,13 +16,40 @@ jobs:
           brew install libvncserver
       - name: Build
         run: |
-          mkdir build
+          mkdir -p build
           cd build
           cmake ..
           cmake --build .
           cmake --install .
-      - name: Archive App Bundle
+      - name: Package Artifacts
+        run: |
+          cd build
+          zip -r macVNC.app.zip macVNC.app
+          # Ensure standalone utility is present
+          test -f listwindows && echo "listwindows present" || (echo "listwindows missing" && exit 1)
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macVNC App Bundle
-          path: build/*.app
+          name: macVNC-dist
+          path: |
+            build/macVNC.app.zip
+            build/listwindows
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macVNC-dist
+          path: dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/macVNC.app.zip
+            dist/listwindows
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
