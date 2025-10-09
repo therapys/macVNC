@@ -35,6 +35,7 @@
 #include <rfb/keysym.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/pwr_mgt/IOPM.h>
+#include <mach/mach.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -63,7 +64,10 @@ static CGRect cropRect;              /* sub-rect within window; window-local coo
 static rfbBool hasCropRect = FALSE;  /* if TRUE, stream only cropRect */
 
 /* The server's private event source */
-CGEventSourceRef eventSource;
+CGEventSourceRef eventSource = NULL;
+
+/* The screen capturer instance */
+ScreenCapturer *screenCapturer = nil;
 
 /* Screen (un)dimming machinery */
 rfbBool preventDimming = FALSE;
@@ -71,23 +75,23 @@ rfbBool preventSleep   = TRUE;
 static pthread_mutex_t  dimming_mutex;
 static unsigned long    dim_time;
 static unsigned long    sleep_time;
-static mach_port_t      master_dev_port;
+static mach_port_t      master_dev_port = MACH_PORT_NULL;
 static io_connect_t     power_mgt;
 static rfbBool initialized            = FALSE;
 static rfbBool dim_time_saved         = FALSE;
 static rfbBool sleep_time_saved       = FALSE;
 
 /* a dictionary mapping characters to keycodes */
-CFMutableDictionaryRef charKeyMap;
+CFMutableDictionaryRef charKeyMap = NULL;
 
 /* a dictionary mapping characters obtained by Shift to keycodes */
-CFMutableDictionaryRef charShiftKeyMap;
+CFMutableDictionaryRef charShiftKeyMap = NULL;
 
 /* a dictionary mapping characters obtained by Alt-Gr to keycodes */
-CFMutableDictionaryRef charAltGrKeyMap;
+CFMutableDictionaryRef charAltGrKeyMap = NULL;
 
 /* a dictionary mapping characters obtained by Shift+Alt-Gr to keycodes */
-CFMutableDictionaryRef charShiftAltGrKeyMap;
+CFMutableDictionaryRef charShiftAltGrKeyMap = NULL;
 
 /* a table mapping special keys to keycodes. static as these are layout-independent */
 static int specialKeyMap[] = {
@@ -320,7 +324,37 @@ dimmingShutdown(void)
 
  DONE:
     pthread_mutex_unlock(&dimming_mutex);
+    pthread_mutex_destroy(&dimming_mutex);
+    
+    /* Close IOKit port */
+    if (master_dev_port != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), master_dev_port);
+        master_dev_port = MACH_PORT_NULL;
+    }
+    
+    initialized = FALSE;
     return result;
+}
+
+void
+keyboardShutdown(void)
+{
+    if (charKeyMap) {
+        CFRelease(charKeyMap);
+        charKeyMap = NULL;
+    }
+    if (charShiftKeyMap) {
+        CFRelease(charShiftKeyMap);
+        charShiftKeyMap = NULL;
+    }
+    if (charAltGrKeyMap) {
+        CFRelease(charAltGrKeyMap);
+        charAltGrKeyMap = NULL;
+    }
+    if (charShiftAltGrKeyMap) {
+        CFRelease(charShiftAltGrKeyMap);
+        charShiftAltGrKeyMap = NULL;
+    }
 }
 
 void serverShutdown(rfbClientPtr cl);
@@ -736,7 +770,7 @@ ScreenInit(int argc, char**argv)
   rfbScreen->ptrAddEvent = PtrAddEvent;
   rfbScreen->kbdAddEvent = KbdAddEvent;
  
-  ScreenCapturer *capturer = [[ScreenCapturer alloc] initWithWindowID: (uint32_t)targetWindowID
+  screenCapturer = [[ScreenCapturer alloc] initWithWindowID: (uint32_t)targetWindowID
                                       frameHandler:^(CMSampleBufferRef sampleBuffer) {
           rfbClientIteratorPtr iterator;
           rfbClientPtr cl;
@@ -804,7 +838,7 @@ ScreenInit(int argc, char**argv)
           //TODO handle other errors
           exit(EXIT_FAILURE);
       }];
-  [capturer startCapture];
+  [screenCapturer startCapture];
 
   rfbInitServer(rfbScreen);
 
@@ -933,7 +967,37 @@ int main(int argc,char *argv[])
 
 void serverShutdown(rfbClientPtr cl)
 {
+  /* Stop screen capture */
+  if (screenCapturer) {
+      [screenCapturer stopCapture];
+      [screenCapturer release];
+      screenCapturer = nil;
+  }
+
+  /* Clean up framebuffers */
+  if (frameBufferOne) {
+      free(frameBufferOne);
+      frameBufferOne = NULL;
+  }
+  if (frameBufferTwo) {
+      free(frameBufferTwo);
+      frameBufferTwo = NULL;
+  }
+
+  /* Clean up event source */
+  if (eventSource) {
+      CFRelease(eventSource);
+      eventSource = NULL;
+  }
+
+  /* Clean up keyboard resources */
+  keyboardShutdown();
+
+  /* Clean up rfb screen */
   rfbScreenCleanup(rfbScreen);
+  
+  /* Clean up dimming/power management */
   dimmingShutdown();
+  
   exit(0);
 }

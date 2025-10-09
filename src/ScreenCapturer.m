@@ -81,12 +81,21 @@
 }
 
 - (void)stopCapture {
+    if (!self.stream) {
+        return;
+    }
     [self.stream stopCaptureWithCompletionHandler:^(NSError * _Nullable stopError) {
         if (stopError) {
             self.errorHandler(stopError);
         }
         self.stream = nil;
     }];
+}
+
+- (void)dealloc {
+    [self stopCapture];
+    /* Handlers will be released when the property is deallocated */
+    [super dealloc];
 }
 
 
