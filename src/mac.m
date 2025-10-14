@@ -903,13 +903,13 @@ int main(int argc,char *argv[])
         listWindows();
         exit(EXIT_SUCCESS);
     } else if(strcmp(argv[i],"-h") == 0 || strcmp(argv[i],"--help") == 0)  {
-        fprintf(stderr, "-viewonly              Do not allow any input\n");
-        fprintf(stderr, "-windowid <id>         Only export specified window (CGWindowID)\n");
-        fprintf(stderr, "-crop <x> <y> <w> <h>  Crop to sub-rectangle inside the window (window-local coords)\n");
-        fprintf(stderr, "-simulator             Auto-select the iOS Simulator window\n");
-        fprintf(stderr, "-simulator-crop        Also crop off the simulator window toolbar (assumes bezels disabled)\n");
-        fprintf(stderr, "-simulator-crop-offset <px>  Fine-tune top crop in pixels when using -simulator-crop\n");
-        fprintf(stderr, "-listwindows           Print on-screen windows with titles and their window IDs\n");
+        printf("-viewonly              Do not allow any input\n");
+        printf("-windowid <id>         Only export specified window (CGWindowID)\n");
+        printf("-crop <x> <y> <w> <h>  Crop to sub-rectangle inside the window (window-local coords)\n");
+        printf("-simulator             Auto-select the iOS Simulator window\n");
+        printf("-simulator-crop        Also crop off the simulator window toolbar (assumes bezels disabled)\n");
+        printf("-simulator-crop-offset <px>  Fine-tune top crop in pixels when using -simulator-crop\n");
+        printf("-listwindows           Print on-screen windows with titles and their window IDs\n");
         rfbUsage();
         exit(EXIT_SUCCESS);
     }
