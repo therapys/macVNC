@@ -831,11 +831,76 @@ ScreenInit(int argc, char**argv)
           rfbReleaseClientIterator(iterator);
 
       } errorHandler:^(NSError *error) {
-          fprintf(stderr, "Error: %s\n", [error.description UTF8String]);
-          if(error.code == SCStreamErrorUserDeclined) {
-              fprintf(stderr, "Could not get screen contents. Check if the program has been given screen recording permissions in 'System Preferences'->'Security & Privacy'->'Privacy'->'Screen Recording'.\n");
+          fprintf(stderr, "Screen capture error: %s\n", [error.description UTF8String]);
+          
+          switch(error.code) {
+              case SCStreamErrorUserDeclined:
+                  fprintf(stderr, "User declined screen recording permission. Enable in 'System Settings'->'Privacy & Security'->'Screen Recording'.\n");
+                  break;
+              case SCStreamErrorFailedToStart:
+                  fprintf(stderr, "Stream failed to start. Check system resources and permissions.\n");
+                  break;
+              case SCStreamErrorMissingEntitlements:
+                  fprintf(stderr, "Missing required entitlements for screen capture.\n");
+                  break;
+              case SCStreamErrorFailedApplicationConnectionInvalid:
+                  fprintf(stderr, "Application connection invalid during recording.\n");
+                  break;
+              case SCStreamErrorFailedApplicationConnectionInterrupted:
+                  fprintf(stderr, "Application connection interrupted during recording.\n");
+                  break;
+              case SCStreamErrorFailedNoMatchingApplicationContext:
+                  fprintf(stderr, "Context ID does not match application.\n");
+                  break;
+              case SCStreamErrorAttemptToStartStreamState:
+                  fprintf(stderr, "Attempted to start a stream that is already recording.\n");
+                  break;
+              case SCStreamErrorAttemptToStopStreamState:
+                  fprintf(stderr, "Attempted to stop a stream that is not recording.\n");
+                  break;
+              case SCStreamErrorAttemptToUpdateFilterState:
+                  fprintf(stderr, "Failed to update stream filter.\n");
+                  break;
+              case SCStreamErrorAttemptToConfigState:
+                  fprintf(stderr, "Failed to update stream configuration.\n");
+                  break;
+              case SCStreamErrorInternalError:
+                  fprintf(stderr, "Internal capture failure. Try restarting the application.\n");
+                  break;
+              case SCStreamErrorInvalidParameter:
+                  fprintf(stderr, "Invalid parameter passed to stream.\n");
+                  break;
+              case SCStreamErrorNoWindowList:
+                  fprintf(stderr, "No window list available for capture.\n");
+                  break;
+              case SCStreamErrorNoDisplayList:
+                  fprintf(stderr, "No display list available for capture.\n");
+                  break;
+              case SCStreamErrorNoCaptureSource:
+                  fprintf(stderr, "No display or window available to capture.\n");
+                  break;
+              case SCStreamErrorRemovingStream:
+                  fprintf(stderr, "Failed to remove stream.\n");
+                  break;
+              case SCStreamErrorUserStopped:
+                  fprintf(stderr, "User stopped the stream.\n");
+                  break;
+              case SCStreamErrorFailedToStartAudioCapture:
+                  fprintf(stderr, "Failed to start audio capture.\n");
+                  break;
+              case SCStreamErrorFailedToStopAudioCapture:
+                  fprintf(stderr, "Failed to stop audio capture.\n");
+                  break;
+              case SCStreamErrorFailedToStartMicrophoneCapture:
+                  fprintf(stderr, "Failed to start microphone capture.\n");
+                  break;
+              case SCStreamErrorSystemStoppedStream:
+                  fprintf(stderr, "System stopped the stream.\n");
+                  break;
+              default:
+                  fprintf(stderr, "Unknown error code: %ld\n", (long)error.code);
+                  break;
           }
-          //TODO handle other errors
           exit(EXIT_FAILURE);
       }];
   [screenCapturer startCapture];
