@@ -1,8 +1,7 @@
 
 /*
  *  OSXvnc Copyright (C) 2001 Dan McGuirk <mcguirk@incompleteness.net>.
- *  Original Xvnc code Copyright (C) 1999 AT&T Laboratories Cambridge.  
- *  All Rights Reserved.
+ *  Original Xvnc code Copyright (C) 1999 AT&T Laboratories Cambridge.  All Rights Reserved.
  * 
  * Cut in two parts by Johannes Schindelin (2001): libvncserver and OSXvnc.
  * 
@@ -913,14 +912,32 @@ ScreenInit(int argc, char**argv)
 
 void clientGone(rfbClientPtr cl)
 {
-    //TODO
+    rfbLog("Client %s disconnected. Server continues running.\n", cl->host);
 }
 
 enum rfbNewClientAction newClient(rfbClientPtr cl)
 {
+  rfbClientIteratorPtr iterator;
+  rfbClientPtr existingCl;
+  int clientCount = 0;
+
+  iterator = rfbGetClientIterator(rfbScreen);
+  while((existingCl = rfbClientIteratorNext(iterator))) {
+    if(existingCl != cl) {
+      clientCount++;
+    }
+  }
+  rfbReleaseClientIterator(iterator);
+
+  if(clientCount > 0) {
+    rfbLog("Refusing client %s: only one client allowed at a time\n", cl->host);
+    return(RFB_CLIENT_REFUSE);
+  }
+
   cl->clientGoneHook = clientGone;
   cl->viewOnly = viewOnly;
 
+  rfbLog("Client %s connected\n", cl->host);
   return(RFB_CLIENT_ACCEPT);
 }
 
