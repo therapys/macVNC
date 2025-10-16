@@ -104,7 +104,9 @@
 */
 
 - (void) stream:(SCStream *) stream didStopWithError:(NSError *) error {
-    self.errorHandler(error);
+    if (error && error.code != 0) {
+        self.errorHandler(error);
+    }
 }
 
 
