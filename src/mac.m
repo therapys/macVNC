@@ -988,23 +988,6 @@ void clientGone(rfbClientPtr cl)
 
 enum rfbNewClientAction newClient(rfbClientPtr cl)
 {
-  rfbClientIteratorPtr iterator;
-  rfbClientPtr existingCl;
-  int clientCount = 0;
-
-  iterator = rfbGetClientIterator(rfbScreen);
-  while((existingCl = rfbClientIteratorNext(iterator))) {
-    if(existingCl != cl) {
-      clientCount++;
-    }
-  }
-  rfbReleaseClientIterator(iterator);
-
-  if(clientCount > 0) {
-    rfbLog("Refusing client %s: only one client allowed at a time\n", cl->host);
-    return(RFB_CLIENT_REFUSE);
-  }
-
   cl->clientGoneHook = clientGone;
   cl->viewOnly = viewOnly;
 
