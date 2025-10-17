@@ -4,6 +4,7 @@
 
 @property (nonatomic, assign) uint32_t windowID;
 @property (nonatomic, strong) SCStream *stream;
+@property (nonatomic, assign) BOOL isStopping;
 
 // handlers
 @property (nonatomic, copy, nonnull) void (^frameHandler)(CMSampleBufferRef sampleBuffer);
@@ -81,14 +82,25 @@
 }
 
 - (void)stopCapture {
-    if (!self.stream) {
+    if (!self.stream || self.isStopping) {
         return;
     }
-    [self.stream stopCaptureWithCompletionHandler:^(NSError * _Nullable stopError) {
+    self.isStopping = YES;
+    
+    NSError *removeError = nil;
+    [self.stream removeStreamOutput:self type:SCStreamOutputTypeScreen error:&removeError];
+    if (removeError) {
+        NSLog(@"Warning: removeStreamOutput error: %@", removeError);
+    }
+    
+    SCStream *stream = [self.stream retain];
+    self.stream = nil;
+    
+    [stream stopCaptureWithCompletionHandler:^(NSError * _Nullable stopError) {
         if (stopError) {
-            self.errorHandler(stopError);
+            NSLog(@"Stop capture error: %@", stopError);
         }
-        self.stream = nil;
+        [stream release];
     }];
 }
 
@@ -115,7 +127,7 @@
 */
 
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
-    if (type == SCStreamOutputTypeScreen) {
+    if (type == SCStreamOutputTypeScreen && !self.isStopping) {
         self.frameHandler(sampleBuffer);
     }
 }

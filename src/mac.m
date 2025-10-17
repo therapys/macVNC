@@ -2,7 +2,6 @@
 /*
  *  OSXvnc Copyright (C) 2001 Dan McGuirk <mcguirk@incompleteness.net>.
  *  Original Xvnc code Copyright (C) 1999 AT&T Laboratories Cambridge.  All Rights Reserved.
- * 
  * Cut in two parts by Johannes Schindelin (2001): libvncserver and OSXvnc.
  * 
  * Completely revamped and adapted to work with contemporary APIs by Christian Beier (2020).
@@ -632,9 +631,28 @@ rfbBool keyboardInit()
 	return FALSE;
     }
 
-    keyboardLayout = (const UCKeyboardLayout *)CFDataGetBytePtr(TISGetInputSourceProperty(currentKeyboard, kTISPropertyUnicodeKeyLayoutData));
+    CFDataRef layoutData = (CFDataRef)TISGetInputSourceProperty(currentKeyboard, kTISPropertyUnicodeKeyLayoutData);
+    if (!layoutData || CFGetTypeID(layoutData) != CFDataGetTypeID()) {
+	fprintf(stderr, "Current input source does not provide keyboard layout data (may be an IME)\n");
+	CFRelease(currentKeyboard);
+	return FALSE;
+    }
+    keyboardLayout = (const UCKeyboardLayout *)CFDataGetBytePtr(layoutData);
+    if (!keyboardLayout) {
+	fprintf(stderr, "Failed to get keyboard layout byte pointer\n");
+	CFRelease(currentKeyboard);
+	return FALSE;
+    }
 
-    printf("Found keyboard layout '%s'\n", CFStringGetCStringPtr(TISGetInputSourceProperty(currentKeyboard, kTISPropertyInputSourceID), kCFStringEncodingUTF8));
+    CFStringRef layoutID = (CFStringRef)TISGetInputSourceProperty(currentKeyboard, kTISPropertyInputSourceID);
+    if (layoutID) {
+	char layoutName[256];
+	if (CFStringGetCString(layoutID, layoutName, sizeof(layoutName), kCFStringEncodingUTF8)) {
+	    printf("Found keyboard layout '%s'\n", layoutName);
+	} else {
+	    printf("Found keyboard layout (unable to convert name)\n");
+	}
+    }
 
     charKeyMap = CFDictionaryCreateMutable(kCFAllocatorDefault, keyCodeCount, &kCFCopyStringDictionaryKeyCallBacks, NULL);
     charShiftKeyMap = CFDictionaryCreateMutable(kCFAllocatorDefault, keyCodeCount, &kCFCopyStringDictionaryKeyCallBacks, NULL);
@@ -666,24 +684,30 @@ rfbBool keyboardInit()
 			   &realLength,
 			   chars);
 
-	    CFStringRef string = CFStringCreateWithCharacters(kCFAllocatorDefault, chars, 1);
-	    if(string) {
-		switch(modifiers[m]) {
-		case 0:
-		    CFDictionaryAddValue(charKeyMap, string, (const void *)i);
-		    break;
-		case kCGEventFlagMaskShift:
-		    CFDictionaryAddValue(charShiftKeyMap, string, (const void *)i);
-		    break;
-		case kCGEventFlagMaskAlternate:
-		    CFDictionaryAddValue(charAltGrKeyMap, string, (const void *)i);
-		    break;
-		case kCGEventFlagMaskShift|kCGEventFlagMaskAlternate:
-		    CFDictionaryAddValue(charShiftAltGrKeyMap, string, (const void *)i);
-		    break;
-		}
+	    if (realLength > 0) {
+		CFStringRef string = CFStringCreateWithCharacters(kCFAllocatorDefault, chars, 1);
+		if(string) {
+		    switch(modifiers[m]) {
+		    case 0:
+			if (!CFDictionaryContainsKey(charKeyMap, string))
+			    CFDictionaryAddValue(charKeyMap, string, (const void *)i);
+			break;
+		    case kCGEventFlagMaskShift:
+			if (!CFDictionaryContainsKey(charShiftKeyMap, string))
+			    CFDictionaryAddValue(charShiftKeyMap, string, (const void *)i);
+			break;
+		    case kCGEventFlagMaskAlternate:
+			if (!CFDictionaryContainsKey(charAltGrKeyMap, string))
+			    CFDictionaryAddValue(charAltGrKeyMap, string, (const void *)i);
+			break;
+		    case kCGEventFlagMaskShift|kCGEventFlagMaskAlternate:
+			if (!CFDictionaryContainsKey(charShiftAltGrKeyMap, string))
+			    CFDictionaryAddValue(charShiftAltGrKeyMap, string, (const void *)i);
+			break;
+		    }
 
-		CFRelease(string);
+		    CFRelease(string);
+		}
 	    }
 	}
     }
@@ -758,10 +782,17 @@ ScreenInit(int argc, char**argv)
   frameBufferOne = malloc(effectiveWidth * effectiveHeight * 4);
   frameBufferTwo = malloc(effectiveWidth * effectiveHeight * 4);
 
-  /* back buffer */
-  backBuffer = frameBufferOne;
-  /* front buffer */
-  rfbScreen->frameBuffer = frameBufferTwo;
+  if (!frameBufferOne || !frameBufferTwo) {
+      fprintf(stderr, "Failed to allocate framebuffers (size: %dx%d)\n", effectiveWidth, effectiveHeight);
+      if (frameBufferOne) free(frameBufferOne);
+      if (frameBufferTwo) free(frameBufferTwo);
+       return FALSE;
+   }
+
+   /* back buffer */
+   backBuffer = frameBufferOne;
+   /* front buffer */
+   rfbScreen->frameBuffer = frameBufferTwo;
 
   /* we already capture the cursor in the framebuffer */
   rfbScreen->cursor = NULL;
@@ -781,28 +812,70 @@ ScreenInit(int argc, char**argv)
           if(!pixelBuffer)
               return;
 
-          CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+          CVReturn lockResult = CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+          if (lockResult != kCVReturnSuccess) {
+              fprintf(stderr, "Failed to lock pixel buffer: %d\n", lockResult);
+              return;
+          }
 
           void *base = CVPixelBufferGetBaseAddress(pixelBuffer);
-          size_t srcStride = (size_t)CVPixelBufferGetBytesPerRow(pixelBuffer);
+          if (!base) {
+              fprintf(stderr, "Pixel buffer base address is NULL\n");
+              CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+              return;
+          }
+
+          size_t pixelBufferWidth = CVPixelBufferGetWidth(pixelBuffer);
+          size_t pixelBufferHeight = CVPixelBufferGetHeight(pixelBuffer);
+          size_t srcStride = CVPixelBufferGetBytesPerRow(pixelBuffer);
           int outW = effectiveWidth;
           int outH = effectiveHeight;
+          const size_t bpp = 4;
+          const size_t dstRowBytes = (size_t)outW * bpp;
+
           if (!hasCropRect) {
-              memcpy(backBuffer, base, (size_t)outW * (size_t)outH * 4);
+              if (pixelBufferWidth != (size_t)outW || pixelBufferHeight != (size_t)outH) {
+                  fprintf(stderr, "Pixel buffer size mismatch: expected %dx%d, got %zux%zu\n", 
+                          outW, outH, pixelBufferWidth, pixelBufferHeight);
+                  CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+                  return;
+              }
+              if (srcStride == dstRowBytes) {
+                  memcpy(backBuffer, base, dstRowBytes * (size_t)outH);
+              } else {
+                  uint8_t *dst = (uint8_t *)backBuffer;
+                  uint8_t *src = (uint8_t *)base;
+                  for (int row = 0; row < outH; ++row) {
+                      memcpy(dst + (size_t)row * dstRowBytes, src + (size_t)row * srcStride, dstRowBytes);
+                  }
+              }
           } else {
+              if (cropRect.origin.x + outW > pixelBufferWidth || 
+                  cropRect.origin.y + outH > pixelBufferHeight) {
+                  fprintf(stderr, "Crop rect out of bounds: crop(%d,%d,%dx%d) vs buffer %zux%zu\n",
+                          (int)cropRect.origin.x, (int)cropRect.origin.y, outW, outH,
+                          pixelBufferWidth, pixelBufferHeight);
+                  CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+                  return;
+              }
               uint8_t *dst = (uint8_t *)backBuffer;
-              uint8_t *srcStart = (uint8_t *)base + ((size_t)cropRect.origin.y * srcStride) + ((size_t)cropRect.origin.x * 4);
+              uint8_t *srcStart = (uint8_t *)base + ((size_t)cropRect.origin.y * srcStride) + ((size_t)cropRect.origin.x * bpp);
               for (int row = 0; row < outH; ++row) {
-                  memcpy(dst + (size_t)row * (size_t)outW * 4, srcStart + (size_t)row * srcStride, (size_t)outW * 4);
+                  memcpy(dst + (size_t)row * dstRowBytes, srcStart + (size_t)row * srcStride, dstRowBytes);
               }
           }
 
           CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 
           /* Lock out client reads. */
+          rfbClientPtr lockedClients[256];
+          size_t lockedCount = 0;
           iterator=rfbGetClientIterator(rfbScreen);
           while((cl=rfbClientIteratorNext(iterator))) {
               LOCK(cl->sendMutex);
+              if (lockedCount < sizeof(lockedClients) / sizeof(lockedClients[0])) {
+                  lockedClients[lockedCount++] = cl;
+              }
           }
           rfbReleaseClientIterator(iterator);
 
@@ -823,11 +896,9 @@ ScreenInit(int argc, char**argv)
           rfbMarkRectAsModified(rfbScreen, 0, 0, effectiveWidth, effectiveHeight);
 
           /* Swapping framebuffers finished, reenable client reads. */
-          iterator=rfbGetClientIterator(rfbScreen);
-          while((cl=rfbClientIteratorNext(iterator))) {
-              UNLOCK(cl->sendMutex);
+          for (size_t i = 0; i < lockedCount; ++i) {
+              UNLOCK(lockedClients[i]->sendMutex);
           }
-          rfbReleaseClientIterator(iterator);
 
       } errorHandler:^(NSError *error) {
           fprintf(stderr, "Screen capture error: %s\n", [error.description UTF8String]);
@@ -949,6 +1020,10 @@ int main(int argc,char *argv[])
     if(strcmp(argv[i],"-viewonly")==0) {
       viewOnly=TRUE;
     } else if(strcmp(argv[i],"-windowid")==0) {
+        if (i + 1 >= argc) {
+            fprintf(stderr, "Error: -windowid requires a window ID argument\n");
+            exit(1);
+        }
         targetWindowID = (uint32_t)strtoul(argv[i+1], NULL, 10);
     } else if(strcmp(argv[i],"-crop")==0) {
         /* expects four integers: x y w h (window-local coordinates) */
