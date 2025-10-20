@@ -60,6 +60,15 @@ add_executable(listwindows src/listwindows.m)
 target_link_libraries(listwindows ${APPLICATION_SERVICES})
 
 #
+# Code signing with entitlements
+#
+set(ENTITLEMENTS_FILE ${CMAKE_CURRENT_SOURCE_DIR}/macVNC.entitlements)
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND codesign --force --sign - --entitlements ${ENTITLEMENTS_FILE} $<TARGET_FILE:${PROJECT_NAME}>
+    COMMENT "Signing macVNC binary with entitlements"
+)
+
+#
 # Install, i.e. finalise bundle
 #
 set(APP ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.app)  # paths to executables
