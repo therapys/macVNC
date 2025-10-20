@@ -983,6 +983,26 @@ ScreenInit(int argc, char**argv)
 
 void clientGone(rfbClientPtr cl)
 {
+    // Count remaining clients
+    int remainingClients = 0;
+    rfbClientIteratorPtr iterator = rfbGetClientIterator(rfbScreen);
+    rfbClientPtr otherClient;
+    while ((otherClient = rfbClientIteratorNext(iterator))) {
+        if (otherClient != cl) {
+            remainingClients++;
+        }
+    }
+    rfbReleaseClientIterator(iterator);
+    
+    fprintf(stderr, "[macVNC] ==================== CLIENT DISCONNECTED ====================\n");
+    fprintf(stderr, "[macVNC] Client %s disconnected (remaining clients: %d)\n", cl->host, remainingClients);
+    
+    // Log ScreenCapturer state when client disconnects
+    if (screenCapturer) {
+        [screenCapturer logDiagnosticState];
+    }
+    
+    fprintf(stderr, "[macVNC] ===============================================================\n");
     rfbLog("Client %s disconnected. Server continues running.\n", cl->host);
 }
 
@@ -991,6 +1011,29 @@ enum rfbNewClientAction newClient(rfbClientPtr cl)
   cl->clientGoneHook = clientGone;
   cl->viewOnly = viewOnly;
 
+  // Count total clients (including this new one)
+  int totalClients = 1;
+  rfbClientIteratorPtr iterator = rfbGetClientIterator(rfbScreen);
+  rfbClientPtr otherClient;
+  while ((otherClient = rfbClientIteratorNext(iterator))) {
+      if (otherClient != cl) {
+          totalClients++;
+      }
+  }
+  rfbReleaseClientIterator(iterator);
+  
+  fprintf(stderr, "[macVNC] ==================== NEW CLIENT CONNECTION ====================\n");
+  fprintf(stderr, "[macVNC] Client %s connected (total clients: %d, viewOnly: %d)\n", 
+          cl->host, totalClients, viewOnly);
+  fprintf(stderr, "[macVNC] Client protocol version: %d.%d\n", 
+          cl->protocolMajorVersion, cl->protocolMinorVersion);
+  
+  // Log ScreenCapturer state when client connects
+  if (screenCapturer) {
+      [screenCapturer logDiagnosticState];
+  }
+  
+  fprintf(stderr, "[macVNC] ==================================================================\n");
   rfbLog("Client %s connected\n", cl->host);
   return(RFB_CLIENT_ACCEPT);
 }

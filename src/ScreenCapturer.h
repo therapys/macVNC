@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)startCapture;
 - (void)stopCapture;
 - (void)restartCapture;
+- (void)logDiagnosticState;
 
 // Health status properties (read-only)
 @property (nonatomic, readonly) NSTimeInterval lastFrameTime;

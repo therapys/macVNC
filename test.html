@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>macVNC WebSocket Viewer</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #111; color: #ddd; font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+      #toolbar { position: fixed; top: 0; left: 0; right: 0; height: 44px; background: #222; display: flex; align-items: center; gap: 8px; padding: 0 10px; z-index: 2; }
+      #status { margin-left: auto; opacity: 0.8; }
+      #screen { position: absolute; top: 44px; left: 0; right: 0; bottom: 0; display: grid; place-items: center; }
+      #screen .rfb-container { box-shadow: 0 10px 30px rgba(0,0,0,0.5); background: #000; }
+      button, input { background: #333; border: 1px solid #444; color: #eee; padding: 6px 10px; border-radius: 6px; }
+      label { opacity: 0.85; }
+    </style>
+  </head>
+  <body>
+    <div id="toolbar">
+      <label>ws://</label>
+      <input id="host" placeholder="host" size="16" />
+      <label>:</label>
+      <input id="port" placeholder="port" size="6" />
+      <button id="connectBtn">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <label style="margin-left:12px"><input id="scale" type="checkbox" checked /> Scale</label>
+      <label><input id="clip" type="checkbox" /> Clip</label>
+      <span id="status">idle</span>
+    </div>
+    <div id="screen"></div>
+
+    <script type="module">
+      import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc/core/rfb.js';
+
+      const qs = new URLSearchParams(location.search);
+      const hostEl = document.getElementById('host');
+      const portEl = document.getElementById('port');
+      const connectBtn = document.getElementById('connectBtn');
+      const disconnectBtn = document.getElementById('disconnectBtn');
+      const scaleEl = document.getElementById('scale');
+      const clipEl = document.getElementById('clip');
+      const statusEl = document.getElementById('status');
+      const container = document.getElementById('screen');
+
+      // Defaults: same host as page (fallback to localhost for file://), WebSocket port 5900 unless ?wsport= overrides
+      hostEl.value = qs.get('wshost') || location.hostname || 'localhost';
+      portEl.value = qs.get('wsport') || '6081';
+
+      let rfb = null;
+
+      function setStatus(text) { statusEl.textContent = text; }
+
+      function connect() {
+        if (rfb) return;
+        const host = (hostEl.value.trim() || 'localhost');
+        const port = (portEl.value.trim() || '5900');
+        const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const url = `${wsProto}://${host}:${port}`;
+        setStatus('connecting…');
+
+        rfb = new RFB(container, url, { wsProtocols: ['binary'] });
+        rfb.viewOnly = false;
+        rfb.scaleViewport = scaleEl.checked;
+        rfb.resizeSession = false;
+        rfb.clipViewport = clipEl.checked;
+        rfb.background = '#000000';
+        rfb.focusOnClick = true;
+
+        rfb.addEventListener('connect', () => {
+          setStatus('connected');
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+        });
+        rfb.addEventListener('disconnect', (e) => {
+          setStatus('disconnected');
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+          rfb = null;
+        });
+        rfb.addEventListener('credentialsrequired', () => {
+          // rfb.sendCredentials({ username, password });
+        });
+        rfb.addEventListener('securityfailure', (e) => {
+          console.error('securityfailure', e);
+          setStatus('security failure');
+        });
+      }
+
+      function disconnect() {
+        if (!rfb) return;
+        try { rfb.disconnect(); } catch {}
+        rfb = null;
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+        setStatus('idle');
+      }
+
+      connectBtn.addEventListener('click', connect);
+      disconnectBtn.addEventListener('click', disconnect);
+      scaleEl.addEventListener('change', () => { if (rfb) rfb.scaleViewport = scaleEl.checked; });
+      clipEl.addEventListener('change', () => { if (rfb) rfb.clipViewport = clipEl.checked; });
+
+      if (qs.get('autoconnect') !== '0') connect();
+    </script>
+  </body>
+  </html>
+
+
