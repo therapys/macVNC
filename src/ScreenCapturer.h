@@ -12,6 +12,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)startCapture;
 - (void)stopCapture;
+- (void)restartCapture;
+
+// Health status properties (read-only)
+@property (nonatomic, readonly) NSTimeInterval lastFrameTime;
+@property (nonatomic, readonly) uint64_t frameCount;
+@property (nonatomic, readonly) uint32_t restartCount;
+@property (nonatomic, readonly) BOOL isHealthy;
 
 @end
 
