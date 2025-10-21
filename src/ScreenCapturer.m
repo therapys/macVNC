@@ -72,6 +72,11 @@
         // set max frame rate to 60 FPS
         config.minimumFrameInterval = CMTimeMake(1, 60);
         config.pixelFormat = kCVPixelFormatType_32BGRA;
+        
+        NSLog(@"[ScreenCapturer] Stream configuration: minFrameInterval=%lld/%d (%.1f fps), pixelFormat=%u",
+              config.minimumFrameInterval.value, config.minimumFrameInterval.timescale,
+              (double)config.minimumFrameInterval.timescale / (double)config.minimumFrameInterval.value,
+              (unsigned int)config.pixelFormat);
 
         SCContentFilter *filter = nil;
         {
@@ -91,11 +96,17 @@
                 return;
             }
             
-            NSLog(@"[ScreenCapturer] Found target window: %.0fx%.0f", 
-                  selectedWindow.frame.size.width, selectedWindow.frame.size.height);
+            NSLog(@"[ScreenCapturer] Found target window: %.0fx%.0f at (%.0f, %.0f), onScreen=%d, layer=%ld", 
+                  selectedWindow.frame.size.width, selectedWindow.frame.size.height,
+                  selectedWindow.frame.origin.x, selectedWindow.frame.origin.y,
+                  selectedWindow.isOnScreen ? 1 : 0,
+                  (long)selectedWindow.windowLayer);
             
             config.width = selectedWindow.frame.size.width;
             config.height = selectedWindow.frame.size.height;
+            
+            NSLog(@"[ScreenCapturer] Configured capture resolution: %.0fx%.0f", 
+                  config.width, config.height);
             if ([SCContentFilter instancesRespondToSelector:@selector(initWithDesktopIndependentWindow:)]) {
                 filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:selectedWindow];
                 NSLog(@"[ScreenCapturer] Using desktop-independent window filter");
@@ -237,6 +248,31 @@
     });
 }
 
+- (void)logDiagnosticState {
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval timeSinceLastFrame = now - self.lastFrameTime;
+    
+    NSLog(@"[ScreenCapturer] ==================== DIAGNOSTIC STATE ====================");
+    NSLog(@"[ScreenCapturer] Health Status:");
+    NSLog(@"[ScreenCapturer]   isHealthy: %d", self.isHealthy);
+    NSLog(@"[ScreenCapturer]   isStopping: %d", self.isStopping);
+    NSLog(@"[ScreenCapturer]   isRestarting: %d", self.isRestarting);
+    NSLog(@"[ScreenCapturer] Frame Statistics:");
+    NSLog(@"[ScreenCapturer]   Total frames: %llu", self.frameCount);
+    NSLog(@"[ScreenCapturer]   Time since last frame: %.2f seconds", timeSinceLastFrame);
+    NSLog(@"[ScreenCapturer]   Last frame timestamp: %.3f", self.lastFrameTime);
+    NSLog(@"[ScreenCapturer] Restart Statistics:");
+    NSLog(@"[ScreenCapturer]   Total restarts: %u", self.restartCount);
+    NSLog(@"[ScreenCapturer]   Consecutive failures: %u", self.consecutiveRestartFailures);
+    NSLog(@"[ScreenCapturer] Stream State:");
+    NSLog(@"[ScreenCapturer]   Stream object: %@", self.stream ? @"EXISTS" : @"NULL");
+    NSLog(@"[ScreenCapturer]   Watchdog timer: %@", self.watchdogTimer ? @"ACTIVE" : @"INACTIVE");
+    NSLog(@"[ScreenCapturer]   Metrics timer: %@", self.metricsTimer ? @"ACTIVE" : @"INACTIVE");
+    NSLog(@"[ScreenCapturer] Window Info:");
+    NSLog(@"[ScreenCapturer]   Target window ID: %u", self.windowID);
+    NSLog(@"[ScreenCapturer] ==========================================================");
+}
+
 #pragma mark - Watchdog Timer
 
 - (void)startWatchdogTimer {
@@ -325,19 +361,71 @@
 #pragma mark - SCStreamDelegate methods
 
 - (void) stream:(SCStream *) stream didStopWithError:(NSError *) error {
-    NSLog(@"[ScreenCapturer] DELEGATE: stream didStopWithError called (error code: %ld)", 
-          (long)(error ? error.code : 0));
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval timeSinceLastFrame = now - self.lastFrameTime;
+    
+    NSLog(@"[ScreenCapturer] ==================== STREAM STOPPED ====================");
+    NSLog(@"[ScreenCapturer] DELEGATE: stream didStopWithError called");
+    NSLog(@"[ScreenCapturer] Stream state at stop: healthy=%d, frames=%llu, restarts=%u",
+          self.isHealthy, self.frameCount, self.restartCount);
+    NSLog(@"[ScreenCapturer] Time since last frame: %.2f seconds", timeSinceLastFrame);
+    NSLog(@"[ScreenCapturer] Intentional stop: isStopping=%d, isRestarting=%d",
+          self.isStopping, self.isRestarting);
+    
+    // Log full diagnostic state
+    [self logDiagnosticState];
+    
+    // Check if window is still available
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
+        if (contentError) {
+            NSLog(@"[ScreenCapturer] ERROR: Failed to check window availability: %@", contentError);
+        } else {
+            BOOL windowFound = NO;
+            SCWindow *targetWindow = nil;
+            for (SCWindow *w in content.windows) {
+                if (w.windowID == self.windowID) {
+                    windowFound = YES;
+                    targetWindow = w;
+                    break;
+                }
+            }
+            
+            if (windowFound) {
+                NSLog(@"[ScreenCapturer] Window %u STILL EXISTS: %.0fx%.0f, onScreen=%d, layer=%ld",
+                      self.windowID,
+                      targetWindow.frame.size.width, targetWindow.frame.size.height,
+                      targetWindow.isOnScreen ? 1 : 0,
+                      (long)targetWindow.windowLayer);
+            } else {
+                NSLog(@"[ScreenCapturer] Window %u NOT FOUND in shareable content (likely closed/hidden)",
+                      self.windowID);
+            }
+            NSLog(@"[ScreenCapturer] Total available windows: %lu", (unsigned long)content.windows.count);
+        }
+    }];
     
     if (error && error.code != 0) {
-        NSLog(@"[ScreenCapturer] ERROR: Stream stopped with error: %@", error);
+        NSLog(@"[ScreenCapturer] ERROR DETAILS:");
+        NSLog(@"[ScreenCapturer]   Domain: %@", error.domain);
+        NSLog(@"[ScreenCapturer]   Code: %ld", (long)error.code);
+        NSLog(@"[ScreenCapturer]   Description: %@", error.localizedDescription);
+        NSLog(@"[ScreenCapturer]   Reason: %@", error.localizedFailureReason ?: @"(none)");
+        NSLog(@"[ScreenCapturer]   Recovery: %@", error.localizedRecoverySuggestion ?: @"(none)");
+        
+        if (error.userInfo) {
+            NSLog(@"[ScreenCapturer]   UserInfo: %@", error.userInfo);
+        }
+        
         self.isHealthy = NO;
         self.errorHandler(error);
     } else {
-        NSLog(@"[ScreenCapturer] Stream stopped without error (may be intentional or silent failure)");
+        NSLog(@"[ScreenCapturer] Stream stopped without error (error is nil or code 0)");
         
         // If we weren't intentionally stopping, this is a problem
         if (!self.isStopping && !self.isRestarting) {
             NSLog(@"[ScreenCapturer] WARNING: Stream stopped unexpectedly without error!");
+            NSLog(@"[ScreenCapturer] This indicates a silent ScreenCaptureKit failure");
+            NSLog(@"[ScreenCapturer] Possible causes: window closed, window minimized, screen lock, display sleep, permissions revoked");
             self.isHealthy = NO;
             self.consecutiveRestartFailures++;
             
@@ -347,6 +435,7 @@
             });
         }
     }
+    NSLog(@"[ScreenCapturer] ========================================================");
 }
 
 
