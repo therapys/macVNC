@@ -5,6 +5,7 @@
 @property (nonatomic, assign) uint32_t windowID;
 @property (nonatomic, strong) SCStream *stream;
 @property (nonatomic, assign) BOOL isStopping;
+@property (nonatomic, assign) BOOL exitOnStreamFailure;
 
 // handlers
 @property (nonatomic, copy, nonnull) void (^frameHandler)(CMSampleBufferRef sampleBuffer);
@@ -31,11 +32,13 @@
 
 - (instancetype)initWithWindowID:(uint32_t)windowID
                    frameHandler:(void (^)(CMSampleBufferRef))frameHandler
-                   errorHandler:(void (^)(NSError *))errorHandler {
+                   errorHandler:(void (^)(NSError *))errorHandler
+             exitOnStreamFailure:(BOOL)exitOnStreamFailure {
     if (self = [super init]) {
         _windowID = windowID;
         _frameHandler = [frameHandler copy];
         _errorHandler = [errorHandler copy];
+        _exitOnStreamFailure = exitOnStreamFailure;
         
         // Initialize frame monitoring
         _frameCount = 0;
@@ -50,8 +53,8 @@
         _lastMetricsFrameCount = 0;
         _lastMetricsTime = 0;
         
-        NSLog(@"[ScreenCapturer] Initialized for window ID: %u, frame timeout: %.1f seconds", 
-              windowID, _frameTimeoutSeconds);
+        NSLog(@"[ScreenCapturer] Initialized for window ID: %u, frame timeout: %.1f seconds, exitOnStreamFailure: %d", 
+              windowID, _frameTimeoutSeconds, exitOnStreamFailure);
     }
     return self;
 }
@@ -427,12 +430,20 @@
             NSLog(@"[ScreenCapturer] This indicates a silent ScreenCaptureKit failure");
             NSLog(@"[ScreenCapturer] Possible causes: window closed, window minimized, screen lock, display sleep, permissions revoked");
             self.isHealthy = NO;
-            self.consecutiveRestartFailures++;
             
-            // Attempt restart
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self restartCapture];
-            });
+            if (self.exitOnStreamFailure) {
+                NSLog(@"[ScreenCapturer] exitOnStreamFailure=true: Exiting process to allow watchdog recovery");
+                // Exit process to allow external watchdog to restart macVNC
+                exit(2);
+            } else {
+                NSLog(@"[ScreenCapturer] exitOnStreamFailure=false: Attempting internal restart");
+                self.consecutiveRestartFailures++;
+                
+                // Attempt internal restart
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self restartCapture];
+                });
+            }
         }
     }
     NSLog(@"[ScreenCapturer] ========================================================");

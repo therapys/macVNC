@@ -44,6 +44,7 @@
 rfbScreenInfoPtr rfbScreen;
 /* Operation modes set by CLI options */
 rfbBool viewOnly = FALSE;
+rfbBool exitOnStreamFailure = TRUE;  /* Default: exit on silent stream failure for watchdog recovery */
 
 /* Two framebuffers. */
 void *frameBufferOne;
@@ -972,7 +973,8 @@ ScreenInit(int argc, char**argv)
                   break;
           }
           exit(EXIT_FAILURE);
-      }];
+      }
+                           exitOnStreamFailure:exitOnStreamFailure];
   [screenCapturer startCapture];
 
   rfbInitServer(rfbScreen);
@@ -1082,6 +1084,10 @@ int main(int argc,char *argv[])
             hasCropRect = TRUE;
             cropRect = CGRectMake(0, top, 0, 0);
         }
+    } else if(strcmp(argv[i],"-exit-on-stream-failure")==0) {
+        exitOnStreamFailure = TRUE;
+    } else if(strcmp(argv[i],"-restart-on-stream-failure")==0) {
+        exitOnStreamFailure = FALSE;
     } else if(strcmp(argv[i],"-listwindows")==0) {
         listWindows();
         exit(EXIT_SUCCESS);
@@ -1092,6 +1098,8 @@ int main(int argc,char *argv[])
         printf("-simulator             Auto-select the iOS Simulator window\n");
         printf("-simulator-crop        Also crop off the simulator window toolbar (assumes bezels disabled)\n");
         printf("-simulator-crop-offset <px>  Fine-tune top crop in pixels when using -simulator-crop\n");
+        printf("-exit-on-stream-failure    Exit process on silent stream failure (default, for watchdog recovery)\n");
+        printf("-restart-on-stream-failure Attempt internal restart on silent stream failure (legacy behavior)\n");
         printf("-listwindows           Print on-screen windows with titles and their window IDs\n");
         rfbUsage();
         exit(EXIT_SUCCESS);

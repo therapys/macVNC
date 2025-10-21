@@ -8,7 +8,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)initWithWindowID:(uint32_t)windowID
                    frameHandler:(nonnull void (^)(CMSampleBufferRef sampleBuffer))frameHandler
-                   errorHandler:(nonnull void (^)(NSError *error))errorHandler;
+                   errorHandler:(nonnull void (^)(NSError *error))errorHandler
+             exitOnStreamFailure:(BOOL)exitOnStreamFailure;
 
 - (void)startCapture;
 - (void)stopCapture;
