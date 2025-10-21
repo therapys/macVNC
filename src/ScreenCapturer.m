@@ -372,6 +372,38 @@
     NSLog(@"[ScreenCapturer] Intentional stop: isStopping=%d, isRestarting=%d",
           self.isStopping, self.isRestarting);
     
+    // Log full diagnostic state
+    [self logDiagnosticState];
+    
+    // Check if window is still available
+    [SCShareableContent getShareableContentWithCompletionHandler:^(SCShareableContent *content, NSError *contentError) {
+        if (contentError) {
+            NSLog(@"[ScreenCapturer] ERROR: Failed to check window availability: %@", contentError);
+        } else {
+            BOOL windowFound = NO;
+            SCWindow *targetWindow = nil;
+            for (SCWindow *w in content.windows) {
+                if (w.windowID == self.windowID) {
+                    windowFound = YES;
+                    targetWindow = w;
+                    break;
+                }
+            }
+            
+            if (windowFound) {
+                NSLog(@"[ScreenCapturer] Window %u STILL EXISTS: %.0fx%.0f, onScreen=%d, layer=%ld",
+                      self.windowID,
+                      targetWindow.frame.size.width, targetWindow.frame.size.height,
+                      targetWindow.isOnScreen ? 1 : 0,
+                      (long)targetWindow.windowLayer);
+            } else {
+                NSLog(@"[ScreenCapturer] Window %u NOT FOUND in shareable content (likely closed/hidden)",
+                      self.windowID);
+            }
+            NSLog(@"[ScreenCapturer] Total available windows: %lu", (unsigned long)content.windows.count);
+        }
+    }];
+    
     if (error && error.code != 0) {
         NSLog(@"[ScreenCapturer] ERROR DETAILS:");
         NSLog(@"[ScreenCapturer]   Domain: %@", error.domain);
@@ -393,6 +425,7 @@
         if (!self.isStopping && !self.isRestarting) {
             NSLog(@"[ScreenCapturer] WARNING: Stream stopped unexpectedly without error!");
             NSLog(@"[ScreenCapturer] This indicates a silent ScreenCaptureKit failure");
+            NSLog(@"[ScreenCapturer] Possible causes: window closed, window minimized, screen lock, display sleep, permissions revoked");
             self.isHealthy = NO;
             self.consecutiveRestartFailures++;
             
